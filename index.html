@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Blog List Generator</title>
+  <style>
+    body {
+      font-family: Georgia, serif;
+      max-width: 800px;
+      margin: 60px auto;
+      padding: 0 20px;
+      background: #fafaf8;
+      color: #222;
+    }
+    h1 { font-size: 1.6rem; margin-bottom: 4px; }
+    p.sub { color: #666; margin-top: 0; margin-bottom: 32px; font-size: 0.95rem; }
+
+    label.upload {
+      display: inline-block;
+      padding: 10px 20px;
+      background: #222;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    label.upload:hover { background: #444; }
+    input[type="file"] { display: none; }
+
+    #status { margin-top: 16px; color: #555; font-size: 0.9rem; min-height: 1.4em; }
+
+    #output-section { display: none; margin-top: 40px; }
+
+    .output-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .output-toolbar h2 { font-size: 1.1rem; margin: 0; }
+
+    .buttons { display: flex; gap: 10px; align-items: center; }
+    button {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    #btn-copy { background: #222; color: #fff; }
+    #btn-copy:hover { background: #444; }
+    #copy-confirm { font-size: 0.85rem; color: #2a7a2a; display: none; }
+
+    /* The rendered output area */
+    #output {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 32px 36px;
+      line-height: 1.7;
+      font-size: 1rem;
+    }
+
+    #output .book-entry { margin-bottom: 36px; }
+    #output .book-entry:not(:last-child) {
+      padding-bottom: 36px;
+      border-bottom: 1px solid #e8e8e4;
+    }
+
+    #output h3 {
+      font-size: 1.1rem;
+      margin: 0 0 10px 0;
+      font-weight: bold;
+    }
+
+    #output h3 a {
+      color: #222;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    #output h3 a:hover { color: #555; }
+
+    #output p {
+      margin: 0;
+      color: #333;
+    }
+
+    #output .no-desc {
+      color: #999;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Blog List Generator</h1>
+  <p class="sub">Upload a CSV with columns: Title, Author, Description, Everand_Link</p>
+
+  <label class="upload">
+    Choose CSV file
+    <input type="file" id="csv-input" accept=".csv">
+  </label>
+
+  <div id="status"></div>
+
+  <div id="output-section">
+    <div class="output-toolbar">
+      <h2>Ready to paste into Contentful</h2>
+      <div class="buttons">
+        <button id="btn-copy">Copy all</button>
+        <span id="copy-confirm">Copied!</span>
+      </div>
+    </div>
+    <div id="output"></div>
+  </div>
+
+  <script>
+    const ENTITIES = {
+      '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'",
+      '&nbsp;': ' ', '&mdash;': '—', '&ndash;': '–', '&lsquo;': '\u2018',
+      '&rsquo;': '\u2019', '&ldquo;': '\u201C', '&rdquo;': '\u201D',
+      '&hellip;': '…', '&copy;': '©', '&reg;': '®', '&trade;': '™',
+    };
+
+    function cleanHtml(html) {
+      if (!html || !html.trim()) return '';
+      return html
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+        .replace(/&[a-z]+;/gi, m => ENTITIES[m] ?? m)
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function parseCSV(text) {
+      const rows = [];
+      let field = '', row = [], inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQuotes) {
+          if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+          else if (ch === '"') inQuotes = false;
+          else field += ch;
+        } else {
+          if (ch === '"') inQuotes = true;
+          else if (ch === ',') { row.push(field); field = ''; }
+          else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+          else if (ch !== '\r') field += ch;
+        }
+      }
+      if (field || row.length) { row.push(field); rows.push(row); }
+      const headers = rows[0];
+      return rows.slice(1)
+        .filter(r => r.length === headers.length)
+        .map(r => Object.fromEntries(headers.map((h, i) => [h.trim(), r[i].trim()])));
+    }
+
+    function render(records) {
+      return records.map(({ Title, Author, Description, Everand_Link }) => {
+        const blurb = cleanHtml(Description);
+        const safeTitle = Title.replace(/"/g, '&quot;');
+        const safeAuthor = Author.replace(/</g, '&lt;');
+        const safeLink = (Everand_Link.startsWith('http') ? Everand_Link : 'https://' + Everand_Link).replace(/"/g, '%22');
+        const blurbHtml = blurb
+          ? `<p>${blurb.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`
+          : `<p class="no-desc">No description available.</p>`;
+        return `<div class="book-entry">
+  <h3><a href="${safeLink}" target="_blank">"${safeTitle}" by ${safeAuthor}</a></h3>
+  ${blurbHtml}
+</div>`;
+      }).join('\n');
+    }
+
+    document.getElementById('csv-input').addEventListener('change', function () {
+      const file = this.files[0];
+      if (!file) return;
+      document.getElementById('status').textContent = `Reading ${file.name}…`;
+
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const records = parseCSV(e.target.result);
+          document.getElementById('output').innerHTML = render(records);
+          document.getElementById('output-section').style.display = 'block';
+          document.getElementById('status').textContent = `Done — ${records.length} books processed.`;
+        } catch (err) {
+          document.getElementById('status').textContent = `Error: ${err.message}`;
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    document.getElementById('btn-copy').addEventListener('click', () => {
+      const el = document.getElementById('output');
+
+      // Select the rendered content and use the browser's native copy
+      // so that live hyperlinks survive the paste into Contentful
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('copy');
+      sel.removeAllRanges();
+
+      const confirm = document.getElementById('copy-confirm');
+      confirm.style.display = 'inline';
+      setTimeout(() => confirm.style.display = 'none', 2000);
+    });
+  </script>
+</body>
+</html>
