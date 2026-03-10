@@ -51,6 +51,50 @@
     #btn-copy:hover { background: #444; }
     #copy-confirm { font-size: 0.85rem; color: #2a7a2a; display: none; }
 
+    #utm-section {
+      margin-top: 20px;
+      font-size: 0.9rem;
+    }
+
+    .utm-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      color: #444;
+      user-select: none;
+    }
+
+    .utm-toggle input { cursor: pointer; }
+
+    #utm-fields {
+      display: none;
+      margin-top: 10px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #utm-fields.visible { display: flex; }
+
+    #utm-campaign {
+      padding: 7px 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-family: Georgia, serif;
+      width: 220px;
+    }
+
+    #utm-campaign:focus { outline: none; border-color: #888; }
+
+    .utm-preview {
+      color: #888;
+      font-family: monospace;
+      font-size: 0.8rem;
+    }
+
     /* The rendered output area */
     #output {
       background: #fff;
@@ -100,6 +144,16 @@
     Choose CSV file
     <input type="file" id="csv-input" accept=".csv">
   </label>
+
+  <div id="utm-section">
+    <label class="utm-toggle">
+      <input type="checkbox" id="utm-enabled"> Add UTM parameters
+    </label>
+    <div id="utm-fields">
+      <input type="text" id="utm-campaign" placeholder="Campaign name">
+      <span class="utm-preview">?utm_source=fable&amp;utm_placement=blog&amp;utm_campaign=<span id="utm-preview-name">…</span></span>
+    </div>
+  </div>
 
   <div id="status"></div>
 
@@ -155,12 +209,23 @@
         .map(r => Object.fromEntries(headers.map((h, i) => [h.trim(), r[i].trim()])));
     }
 
+    function buildLink(rawUrl) {
+      const base = rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl;
+      const utmEnabled = document.getElementById('utm-enabled').checked;
+      const campaign = document.getElementById('utm-campaign').value.trim();
+      if (utmEnabled && campaign) {
+        const sep = base.includes('?') ? '&' : '?';
+        return (base + sep + 'utm_source=fable&utm_placement=blog&utm_campaign=' + encodeURIComponent(campaign)).replace(/"/g, '%22');
+      }
+      return base.replace(/"/g, '%22');
+    }
+
     function render(records) {
       return records.map(({ Title, Author, Description, Everand_Link }) => {
         const blurb = cleanHtml(Description);
         const safeTitle = Title.replace(/"/g, '&quot;');
         const safeAuthor = Author.replace(/</g, '&lt;');
-        const safeLink = (Everand_Link.startsWith('http') ? Everand_Link : 'https://' + Everand_Link).replace(/"/g, '%22');
+        const safeLink = buildLink(Everand_Link);
         const blurbHtml = blurb
           ? `<p>${blurb.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`
           : `<p class="no-desc">No description available.</p>`;
@@ -170,6 +235,14 @@
 </div>`;
       }).join('\n');
     }
+
+    document.getElementById('utm-enabled').addEventListener('change', function () {
+      document.getElementById('utm-fields').classList.toggle('visible', this.checked);
+    });
+
+    document.getElementById('utm-campaign').addEventListener('input', function () {
+      document.getElementById('utm-preview-name').textContent = this.value.trim() || '…';
+    });
 
     document.getElementById('csv-input').addEventListener('change', function () {
       const file = this.files[0];
