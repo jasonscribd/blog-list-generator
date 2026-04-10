@@ -133,12 +133,18 @@
       color: #999;
       font-style: italic;
     }
+
+    #output .review {
+      margin: 8px 0 0 0;
+      color: #555;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
 
   <h1>Blog List Generator</h1>
-  <p class="sub">Upload a CSV with columns: Title, Author, Description, Everand_Link</p>
+  <p class="sub">Upload a CSV with Title/Author/Link columns. Description, reviewer name, and review text are optional.</p>
 
   <label class="upload">
     Choose CSV file
@@ -186,6 +192,37 @@
         .trim();
     }
 
+    // Extract a short tagline from a long HTML description.
+    // Strategy: collect text from all <b>/<strong> blocks, split into paragraphs,
+    // then return the last paragraph that isn't a pull quote, all-caps line, or series note.
+    function extractTagline(html) {
+      if (!html || !html.trim()) return '';
+      const boldRe = /<(?:b|strong)[^>]*>([\s\S]*?)<\/(?:b|strong)>/gi;
+      const segments = [];
+      let m;
+      while ((m = boldRe.exec(html)) !== null) segments.push(m[1]);
+      if (segments.length === 0) {
+        // No bold text — use first sentence of cleaned full text
+        const full = cleanHtml(html);
+        const first = full.match(/^[^.!?]+[.!?]/);
+        return first ? first[0].trim() : full.substring(0, 250).trim();
+      }
+      const combined = segments.join('<br><br>');
+      const paras = combined.split(/<br\s*\/?>\s*(?:<br\s*\/?>)*/i)
+        .map(p => cleanHtml(p).trim())
+        .filter(p => p.length > 0);
+      const quoteStarts = /^[\u201C\u201D\u2018\u2019\u00AB\u00BB"'«»\u2014\—]/;
+      for (let i = paras.length - 1; i >= 0; i--) {
+        const p = paras[i];
+        if (p.length < 25) continue;
+        if (quoteStarts.test(p)) continue;
+        if (p === p.toUpperCase()) continue; // all-caps blurb header
+        if (/^Book \w+ of /i.test(p)) continue; // series info
+        return p;
+      }
+      return paras[paras.length - 1] || '';
+    }
+
     function parseCSV(text) {
       const rows = [];
       let field = '', row = [], inQuotes = false;
@@ -203,10 +240,25 @@
         }
       }
       if (field || row.length) { row.push(field); rows.push(row); }
-      const headers = rows[0];
-      return rows.slice(1)
-        .filter(r => r.length === headers.length)
-        .map(r => Object.fromEntries(headers.map((h, i) => [h.trim(), r[i].trim()])));
+
+      // Detect headerless CSV: if any cell in the first row is a URL or very long, it's data.
+      const firstRow = rows[0];
+      const hasHeaders = firstRow && !firstRow.some(c => c.startsWith('http') || c.length > 100);
+      let headers, dataRows;
+      if (hasHeaders) {
+        headers = firstRow;
+        dataRows = rows.slice(1);
+      } else {
+        // Generate positional headers for the Everand catalog format:
+        // Title, Author, ISBN, Link, Description, Reviewer, Review
+        const positionalNames = ['Title', 'Author', 'ISBN', 'Link', 'Description', 'Reviewer', 'Review'];
+        headers = Array.from({ length: firstRow.length }, (_, i) => positionalNames[i] || `col_${i}`);
+        dataRows = rows;
+      }
+
+      return dataRows
+        .filter(r => r.length >= headers.length - 1)
+        .map(r => Object.fromEntries(headers.map((h, i) => [h.trim(), (r[i] || '').trim()])));
     }
 
     function buildLink(rawUrl) {
@@ -220,18 +272,59 @@
       return base.replace(/"/g, '%22');
     }
 
+    function findColumn(keys, candidates) {
+      for (const c of candidates) {
+        const match = keys.find(k => k.toLowerCase() === c.toLowerCase());
+        if (match) return match;
+      }
+      for (const c of candidates) {
+        const match = keys.find(k => k.toLowerCase().includes(c.toLowerCase()));
+        if (match) return match;
+      }
+      return null;
+    }
+
     function render(records) {
-      return records.map(({ Title, Author, Description, Everand_Link }) => {
-        const blurb = cleanHtml(Description);
-        const safeTitle = Title.replace(/"/g, '&quot;');
-        const safeAuthor = Author.replace(/</g, '&lt;');
-        const safeLink = buildLink(Everand_Link);
-        const blurbHtml = blurb
-          ? `<p>${blurb.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`
-          : `<p class="no-desc">No description available.</p>`;
+      if (records.length === 0) throw new Error('No records found in CSV.');
+      const keys = Object.keys(records[0]);
+
+      const titleCol = findColumn(keys, ['Title', 'doc_title', 'Book Title', 'Name']);
+      if (!titleCol) throw new Error('Could not find a title column (e.g. Title, doc_title).');
+
+      const authorCol = findColumn(keys, ['Author', 'Authors', 'authors', 'Author Name', 'Writer']);
+      if (!authorCol) throw new Error('Could not find an author column (e.g. Author, authors).');
+
+      const linkCol = findColumn(keys, ['Link', 'URL', 'Href', 'catalog_link', 'Everand_Link', 'Everand Link']);
+      if (!linkCol) throw new Error('Could not find a link column (e.g. Link, URL, catalog_link).');
+
+      const descCol = findColumn(keys, ['Description', 'Blurb', 'Summary', 'Notes', 'Text']);
+      const reviewerCol = findColumn(keys, ['Reviewer', 'Reviewer Name', 'Reader', 'Reader Name', 'User']);
+      const reviewCol = findColumn(keys, ['Review', 'Book Review', 'Book_Review', 'Review Text', 'User Review', 'Comment', 'Quote']);
+
+      return records.map(row => {
+        const rawDesc = descCol ? row[descCol] : '';
+        // Use tagline extraction for long HTML descriptions; plain text passes through cleanHtml
+        const blurb = rawDesc
+          ? (rawDesc.includes('<') ? extractTagline(rawDesc) : cleanHtml(rawDesc))
+          : '';
+        const reviewer = reviewerCol ? row[reviewerCol].trim() : '';
+        const reviewText = reviewCol ? row[reviewCol].trim() : '';
+
+        const safeTitle = row[titleCol].replace(/"/g, '&quot;');
+        const safeAuthor = row[authorCol].replace(/</g, '&lt;');
+        const safeLink = buildLink(row[linkCol]);
+
+        const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        const blurbHtml = blurb ? `\n  <p>${esc(blurb)}</p>` : '';
+        const reviewHtml = reviewText
+          ? (reviewer
+              ? `\n  <p class="review">Fable reader ${esc(reviewer)} wrote: &ldquo;${esc(reviewText)}&rdquo;</p>`
+              : `\n  <p class="review">&ldquo;${esc(reviewText)}&rdquo;</p>`)
+          : '';
+
         return `<div class="book-entry">
-  <h3><a href="${safeLink}" target="_blank">"${safeTitle}" by ${safeAuthor}</a></h3>
-  ${blurbHtml}
+  <h3><a href="${safeLink}" target="_blank">"${safeTitle}" by ${safeAuthor}</a></h3>${blurbHtml}${reviewHtml}
 </div>`;
       }).join('\n');
     }
