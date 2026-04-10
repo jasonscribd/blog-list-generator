@@ -192,37 +192,6 @@
         .trim();
     }
 
-    // Extract a short tagline from a long HTML description.
-    // Strategy: collect text from all <b>/<strong> blocks, split into paragraphs,
-    // then return the last paragraph that isn't a pull quote, all-caps line, or series note.
-    function extractTagline(html) {
-      if (!html || !html.trim()) return '';
-      const boldRe = /<(?:b|strong)[^>]*>([\s\S]*?)<\/(?:b|strong)>/gi;
-      const segments = [];
-      let m;
-      while ((m = boldRe.exec(html)) !== null) segments.push(m[1]);
-      if (segments.length === 0) {
-        // No bold text — use first sentence of cleaned full text
-        const full = cleanHtml(html);
-        const first = full.match(/^[^.!?]+[.!?]/);
-        return first ? first[0].trim() : full.substring(0, 250).trim();
-      }
-      const combined = segments.join('<br><br>');
-      const paras = combined.split(/<br\s*\/?>\s*(?:<br\s*\/?>)*/i)
-        .map(p => cleanHtml(p).trim())
-        .filter(p => p.length > 0);
-      const quoteStarts = /^[\u201C\u201D\u2018\u2019\u00AB\u00BB"'«»\u2014\—]/;
-      for (let i = paras.length - 1; i >= 0; i--) {
-        const p = paras[i];
-        if (p.length < 25) continue;
-        if (quoteStarts.test(p)) continue;
-        if (p === p.toUpperCase()) continue; // all-caps blurb header
-        if (/^Book \w+ of /i.test(p)) continue; // series info
-        return p;
-      }
-      return paras[paras.length - 1] || '';
-    }
-
     function parseCSV(text) {
       const rows = [];
       let field = '', row = [], inQuotes = false;
@@ -272,13 +241,14 @@
       return base.replace(/"/g, '%22');
     }
 
-    function findColumn(keys, candidates) {
+    function findColumn(keys, candidates, exclude = []) {
+      const available = keys.filter(k => !exclude.includes(k));
       for (const c of candidates) {
-        const match = keys.find(k => k.toLowerCase() === c.toLowerCase());
+        const match = available.find(k => k.toLowerCase() === c.toLowerCase());
         if (match) return match;
       }
       for (const c of candidates) {
-        const match = keys.find(k => k.toLowerCase().includes(c.toLowerCase()));
+        const match = available.find(k => k.toLowerCase().includes(c.toLowerCase()));
         if (match) return match;
       }
       return null;
@@ -298,15 +268,14 @@
       if (!linkCol) throw new Error('Could not find a link column (e.g. Link, URL, catalog_link).');
 
       const descCol = findColumn(keys, ['Description', 'Blurb', 'Summary', 'Notes', 'Text']);
-      const reviewerCol = findColumn(keys, ['Reviewer', 'Reviewer Name', 'Reader', 'Reader Name', 'User']);
-      const reviewCol = findColumn(keys, ['Review', 'Book Review', 'Book_Review', 'Review Text', 'User Review', 'Comment', 'Quote']);
+      const reviewerCol = findColumn(keys, ['Reviewer', 'ReviewerName', 'Reviewer Name', 'Reader', 'Reader Name', 'User']);
+      const reviewCol = findColumn(keys, ['TopReview', 'Review', 'Book Review', 'Book_Review', 'Review Text', 'User Review', 'Comment', 'Quote'], [reviewerCol].filter(Boolean));
+
+      const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
       return records.map(row => {
         const rawDesc = descCol ? row[descCol] : '';
-        // Use tagline extraction for long HTML descriptions; plain text passes through cleanHtml
-        const blurb = rawDesc
-          ? (rawDesc.includes('<') ? extractTagline(rawDesc) : cleanHtml(rawDesc))
-          : '';
+        const blurb = cleanHtml(rawDesc);
         const reviewer = reviewerCol ? row[reviewerCol].trim() : '';
         const reviewText = reviewCol ? row[reviewCol].trim() : '';
 
@@ -314,12 +283,10 @@
         const safeAuthor = row[authorCol].replace(/</g, '&lt;');
         const safeLink = buildLink(row[linkCol]);
 
-        const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
         const blurbHtml = blurb ? `\n  <p>${esc(blurb)}</p>` : '';
         const reviewHtml = reviewText
           ? (reviewer
-              ? `\n  <p class="review">Fable reader ${esc(reviewer)} wrote: &ldquo;${esc(reviewText)}&rdquo;</p>`
+              ? `\n  <p class="review">Fable reader ${esc(reviewer)}: &ldquo;${esc(reviewText)}&rdquo;</p>`
               : `\n  <p class="review">&ldquo;${esc(reviewText)}&rdquo;</p>`)
           : '';
 
